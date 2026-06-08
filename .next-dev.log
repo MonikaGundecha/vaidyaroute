@@ -1,0 +1,33 @@
+
+> vaidyaroute@0.1.0 dev
+> next dev
+
+  ▲ Next.js 14.2.35
+  - Local:        http://localhost:3000
+  - Environments: .env.local
+
+ ✓ Starting...
+ ✓ Ready in 3s
+ ✓ Compiled /api/generate-route in 496ms (64 modules)
+ GET /api/generate-route 200 in 1365ms
+ ○ Compiling / ...
+ ✓ Compiled / in 4.4s (607 modules)
+ ✓ Compiled in 354ms (271 modules)
+ GET / 200 in 4797ms
+ ○ Compiling /favicon.ico ...
+ ✓ Compiled /favicon.ico in 2.4s (347 modules)
+ GET /favicon.ico 200 in 2570ms
+ GET /api/generate-route 200 in 2964ms
+ GET /api/generate-route 200 in 3092ms
+ GET / 200 in 107ms
+ GET /favicon.ico 200 in 23ms
+ GET /api/generate-route 200 in 192ms
+ GET /api/generate-route 200 in 306ms
+ GET / 200 in 45ms
+ GET /favicon.ico 200 in 68ms
+ GET /api/generate-route 200 in 249ms
+ GET /api/generate-route 200 in 319ms
+ GET / 200 in 121ms
+ GET /api/generate-route 200 in 178ms
+ GET /api/generate-route 200 in 196ms
+ GET /favicon.ico 200 in 23ms

@@ -2,22 +2,78 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  -webkit-text-size-adjust: 100%;
+  min-height: 100%;
+  /* One unified gradient across the whole page — no white bars. */
+  background: linear-gradient(
+    160deg,
+    #e8f5ef 0%,
+    #f0f7f4 30%,
+    #f5f5f0 70%,
+    #f7f4ee 100%
+  )
+    fixed;
 }
 
 body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+  /* Inter (loaded via next/font in layout) with system fallbacks. */
+  font-family: var(--font-inter), system-ui, -apple-system, Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  color: #111827;
+  min-height: 100vh;
+  background: transparent;
+}
+
+/* Mobile: +1px base for readability. */
+@media (max-width: 767px) {
+  body {
+    font-size: 16px;
+  }
+}
+
+/* Bottom-sheet slide-up (visit logger) */
+@keyframes slideup {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+/* Stop card enters (replacement slides in) */
+@keyframes cardin {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Shimmer skeleton background */
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    #eceeed 25%,
+    #f5f6f5 50%,
+    #eceeed 75%
+  );
+  background-size: 936px 100%;
+  animation: shimmer 1.5s linear infinite;
+}
+
+/* Hide scrollbars on horizontal chip rows */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 @layer utilities {
