@@ -133,8 +133,8 @@ export function requireMapsApiKey(): string {
 }
 
 /** User-configured starting address (Settings page). Throws if none is set. */
-function startingAddress(): string {
-  const addr = getStartingAddress();
+async function startingAddress(): Promise<string> {
+  const addr = await getStartingAddress();
   if (!addr) {
     throw new PlacesError(
       'No starting address set — add one on the Settings page before generating a route.',
@@ -202,7 +202,7 @@ export async function getStartingCoordinates(): Promise<{
   lat: number;
   lng: number;
 }> {
-  const address = startingAddress();
+  const address = await startingAddress();
   if (cachedOrigin && cachedOrigin.address === address) {
     return { lat: cachedOrigin.lat, lng: cachedOrigin.lng };
   }
@@ -361,7 +361,7 @@ export async function discoverStores(): Promise<DiscoveryResult> {
     const score = scoreRelevance(name, place.types, refined);
     if (score < MIN_RELEVANCE_SCORE) continue;
 
-    upsertStore({
+    await upsertStore({
       id: place.id,
       name,
       address: place.formattedAddress ?? '',
@@ -422,9 +422,8 @@ export function isOpenDuringWindow(
   if (!periods?.length) return false;
 
   const targetDay = date.getDay(); // 0 = Sunday, matches Google's `day`
-  const window = getVisitWindow();
-  const winStart = parseHHMM(startHHMM ?? window.start, '17:00');
-  const winEnd = parseHHMM(endHHMM ?? window.end, '20:00');
+  const winStart = parseHHMM(startHHMM, '17:00');
+  const winEnd = parseHHMM(endHHMM, '20:00');
 
   const winStartAbs = targetDay * 1440 + winStart;
   const winEndAbs = targetDay * 1440 + winEnd;
@@ -518,11 +517,21 @@ export function getWeekdayHours(hoursJson: string | null): string[] | null {
 export function filterOpenTonight(
   stores: StoreRow[],
   date: Date = new Date(),
+  window?: { start: string; end: string },
 ): StoreRow[] {
-  return stores.filter((s) => isOpenDuringWindow(s.hours_json, date));
+  const w = window ?? { start: '17:00', end: '20:00' };
+  return stores.filter((s) =>
+    isOpenDuringWindow(s.hours_json, date, w.start, w.end),
+  );
 }
 
 /** Convenience: all routable stores that are open during tonight's window. */
-export function getOpenStoresTonight(date: Date = new Date()): StoreRow[] {
-  return filterOpenTonight(getActiveStores(), date);
+export async function getOpenStoresTonight(
+  date: Date = new Date(),
+): Promise<StoreRow[]> {
+  const [stores, window] = await Promise.all([
+    getActiveStores(),
+    getVisitWindow(),
+  ]);
+  return filterOpenTonight(stores, date, window);
 }

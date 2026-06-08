@@ -1,23 +1,61 @@
-import Database from 'better-sqlite3';
-import type { Database as BetterSqlite3Database } from 'better-sqlite3';
+import { createClient, type Client, type ResultSet } from '@libsql/client';
 import fs from 'node:fs';
 import path from 'node:path';
 import { scoreRelevance, MIN_RELEVANCE_SCORE } from './relevance';
 
 // ---------------------------------------------------------------------------
-// Connection (singleton)
+// Connection (Turso / LibSQL)
 // ---------------------------------------------------------------------------
-// Next.js hot-reloads modules in dev, which would otherwise open a new SQLite
-// handle on every change and eventually exhaust file handles. We stash the
-// instance on globalThis so a single connection survives reloads.
+// In production set TURSO_DATABASE_URL (+ TURSO_AUTH_TOKEN). With neither set we
+// fall back to a local SQLite file so dev works without a hosted database.
+// The client + the one-time migration promise are stashed on globalThis so
+// Next.js hot-reloads reuse a single connection.
 
 const DB_DIR = path.join(process.cwd(), 'data');
-const DB_PATH = path.join(DB_DIR, 'vaidyaroute.db');
 
-// Relevance-cleanup blocklists. Declared here (above `db`) because the cleanup
-// runs during createConnection(), which executes when `db` is initialized.
+const globalForDb = globalThis as unknown as {
+  __vaidyaClient?: Client;
+  __vaidyaMigrated?: Promise<void>;
+};
 
-// Google place types that disqualify a store (mirrors the discovery blocklist).
+function localFileUrl(): string {
+  fs.mkdirSync(DB_DIR, { recursive: true });
+  return `file:${path.join(DB_DIR, 'vaidyaroute.db')}`;
+}
+
+function rawClient(): Client {
+  if (globalForDb.__vaidyaClient) return globalForDb.__vaidyaClient;
+  const envUrl = process.env.TURSO_DATABASE_URL?.trim();
+  const url = envUrl && envUrl.length > 0 ? envUrl : localFileUrl();
+  const authToken = process.env.TURSO_AUTH_TOKEN;
+  const c = createClient({ url, authToken });
+  globalForDb.__vaidyaClient = c;
+  return c;
+}
+
+/** Get the client, running (and awaiting) migrations exactly once. */
+async function client(): Promise<Client> {
+  const c = rawClient();
+  if (!globalForDb.__vaidyaMigrated) globalForDb.__vaidyaMigrated = migrate(c);
+  await globalForDb.__vaidyaMigrated;
+  return c;
+}
+
+// ---------------------------------------------------------------------------
+// Result helpers
+// ---------------------------------------------------------------------------
+
+function many<T>(rs: ResultSet): T[] {
+  return rs.rows as unknown as T[];
+}
+function one<T>(rs: ResultSet): T | undefined {
+  return rs.rows[0] as unknown as T | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Relevance-cleanup blocklists (used by the one-time data cleanup)
+// ---------------------------------------------------------------------------
+
 const CLEANUP_BLOCKED_TYPES = new Set<string>([
   'lodging', 'real_estate_agency', 'finance', 'bank', 'atm', 'car_dealer',
   'car_repair', 'car_wash', 'gas_station', 'parking', 'airport',
@@ -27,78 +65,50 @@ const CLEANUP_BLOCKED_TYPES = new Set<string>([
   'cafe', 'bakery', 'meal_delivery', 'meal_takeaway',
 ]);
 
-// Name keywords (whole-word, case-insensitive) that mark a store irrelevant.
 const CLEANUP_NAME_RE =
   /\b(hotel|residence|residences|apartments|suites|inn|ritz|marriott|hilton|hyatt|restaurant|bistro|bar|cafe|café|bakery|grill|pizza|burger|sushi|diner|cantina)\b/i;
-
-const globalForDb = globalThis as unknown as { __vaidyaDb?: BetterSqlite3Database };
-
-function createConnection(): BetterSqlite3Database {
-  fs.mkdirSync(DB_DIR, { recursive: true });
-
-  const connection = new Database(DB_PATH);
-  // WAL gives better concurrent read/write behavior; foreign keys are off by
-  // default in SQLite and must be enabled per-connection.
-  connection.pragma('journal_mode = WAL');
-  connection.pragma('foreign_keys = ON');
-
-  migrate(connection);
-  return connection;
-}
-
-export const db: BetterSqlite3Database = globalForDb.__vaidyaDb ?? createConnection();
-if (process.env.NODE_ENV !== 'production') {
-  globalForDb.__vaidyaDb = db;
-}
 
 // ---------------------------------------------------------------------------
 // Schema migration
 // ---------------------------------------------------------------------------
 
-function migrate(connection: BetterSqlite3Database): void {
-  connection.exec(`
-    -- Stores discovered via Places API
+async function migrate(c: Client): Promise<void> {
+  await c.executeMultiple(`
     CREATE TABLE IF NOT EXISTS stores (
-      id TEXT PRIMARY KEY,           -- Google Place ID
+      id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       address TEXT NOT NULL,
       lat REAL NOT NULL,
       lng REAL NOT NULL,
       phone TEXT,
-      category TEXT,                 -- yoga_studio | health_food | wellness | spa | gym | other
+      category TEXT,
       google_rating REAL,
-      hours_json TEXT,               -- raw opening_hours from Places API
-      types_json TEXT,               -- raw Google place types array (for relevance filtering)
-      relevance_score INTEGER,       -- 0-10 ayurvedic-prospect relevance (>=7 kept)
+      hours_json TEXT,
+      types_json TEXT,
+      relevance_score INTEGER,
       discovered_at TEXT DEFAULT (datetime('now')),
-      refreshed_at TEXT DEFAULT (datetime('now')),  -- last time we re-queried Google for this store
-      force_include INTEGER NOT NULL DEFAULT 0,      -- user override: pin into tonight's route
-      is_irrelevant INTEGER NOT NULL DEFAULT 0,      -- user override: permanently exclude from routes
-      skipped_until TEXT                             -- "skip today": suppress until this YYYY-MM-DD
+      refreshed_at TEXT DEFAULT (datetime('now')),
+      force_include INTEGER NOT NULL DEFAULT 0,
+      is_irrelevant INTEGER NOT NULL DEFAULT 0,
+      skipped_until TEXT
     );
 
-    -- Every time he visits (or decides to skip) a store.
-    -- outcome is free-form TEXT: the UI offers preset shortcuts
-    -- (interested / not_interested / follow_up / no_answer / closed) but the
-    -- user can also save any custom outcome string.
     CREATE TABLE IF NOT EXISTS visits (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store_id TEXT REFERENCES stores(id),
       visited_at TEXT DEFAULT (datetime('now')),
       outcome TEXT,
       notes TEXT,
-      next_visit_date TEXT           -- optional: schedule a follow-up
+      next_visit_date TEXT
     );
 
-    -- Daily generated routes
     CREATE TABLE IF NOT EXISTS routes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      date TEXT NOT NULL,            -- YYYY-MM-DD
-      store_ids_json TEXT NOT NULL,  -- ordered array of Place IDs
+      date TEXT NOT NULL,
+      store_ids_json TEXT NOT NULL,
       generated_at TEXT DEFAULT (datetime('now'))
     );
 
-    -- Single-user app config (starting address, visit window, …).
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
@@ -110,40 +120,27 @@ function migrate(connection: BetterSqlite3Database): void {
     CREATE INDEX IF NOT EXISTS idx_routes_date ON routes(date);
   `);
 
-  // --- Guarded migrations for DBs created before a column/constraint existed.
-  const storeCols = connection
-    .prepare('PRAGMA table_info(stores)')
-    .all() as { name: string }[];
-  if (!storeCols.some((c) => c.name === 'force_include')) {
-    connection.exec(
-      'ALTER TABLE stores ADD COLUMN force_include INTEGER NOT NULL DEFAULT 0',
-    );
-  }
-  if (!storeCols.some((c) => c.name === 'is_irrelevant')) {
-    connection.exec(
-      'ALTER TABLE stores ADD COLUMN is_irrelevant INTEGER NOT NULL DEFAULT 0',
-    );
-  }
-  if (!storeCols.some((c) => c.name === 'skipped_until')) {
-    connection.exec('ALTER TABLE stores ADD COLUMN skipped_until TEXT');
-  }
-  if (!storeCols.some((c) => c.name === 'types_json')) {
-    connection.exec('ALTER TABLE stores ADD COLUMN types_json TEXT');
-  }
-  if (!storeCols.some((c) => c.name === 'relevance_score')) {
-    connection.exec('ALTER TABLE stores ADD COLUMN relevance_score INTEGER');
-  }
+  // --- Guarded column additions for DBs created before a column existed.
+  const cols = many<{ name: string }>(
+    await c.execute('PRAGMA table_info(stores)'),
+  ).map((r) => r.name);
+  const addColumn = async (name: string, ddl: string) => {
+    if (!cols.includes(name)) await c.execute(`ALTER TABLE stores ADD COLUMN ${ddl}`);
+  };
+  await addColumn('force_include', 'force_include INTEGER NOT NULL DEFAULT 0');
+  await addColumn('is_irrelevant', 'is_irrelevant INTEGER NOT NULL DEFAULT 0');
+  await addColumn('skipped_until', 'skipped_until TEXT');
+  await addColumn('types_json', 'types_json TEXT');
+  await addColumn('relevance_score', 'relevance_score INTEGER');
 
-  // The original `visits` table had a CHECK constraint pinning `outcome` to five
-  // values. We now allow free-form outcomes, so rebuild the table without the
-  // constraint when an older schema is detected. SQLite can't DROP a CHECK, so
-  // we recreate-and-copy. This is a no-op for freshly created DBs.
-  const visitsTable = connection
-    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='visits'")
-    .get() as { sql: string } | undefined;
+  // --- Rebuild visits without the old CHECK(outcome) constraint if present.
+  const visitsTable = one<{ sql: string }>(
+    await c.execute(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='visits'",
+    ),
+  );
   if (visitsTable && /CHECK\s*\(\s*outcome/i.test(visitsTable.sql)) {
-    connection.exec(`
-      BEGIN;
+    await c.executeMultiple(`
       CREATE TABLE visits_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         store_id TEXT REFERENCES stores(id),
@@ -158,71 +155,125 @@ function migrate(connection: BetterSqlite3Database): void {
       ALTER TABLE visits_new RENAME TO visits;
       CREATE INDEX IF NOT EXISTS idx_visits_store_id ON visits(store_id);
       CREATE INDEX IF NOT EXISTS idx_visits_visited_at ON visits(visited_at);
-      COMMIT;
     `);
   }
 
-  // One-time cleanup of pre-blocklist junk data (hotels, restaurants, etc.).
-  runIrrelevanceCleanup(connection);
-
-  // One-time backfill of relevance_score for stores discovered before scoring.
-  runRelevanceBackfill(connection);
+  await runIrrelevanceCleanup(c);
+  await runRelevanceBackfill(c);
 }
 
-/**
- * Runs once per database (guarded by a settings flag): computes a relevance
- * score for every store from its stored name/types/category. Logs how many
- * land at/above the routing threshold.
- */
-function runRelevanceBackfill(connection: BetterSqlite3Database): void {
-  const FLAG = 'relevance_score_v1';
-  const done = connection
-    .prepare('SELECT value FROM settings WHERE key = ?')
-    .get(FLAG);
-  if (done) return;
+// ---------------------------------------------------------------------------
+// One-time relevance cleanup of legacy/dirty store data
+// ---------------------------------------------------------------------------
 
-  const rows = connection
-    .prepare('SELECT id, name, category, types_json FROM stores')
-    .all() as {
+async function flagDone(c: Client, key: string): Promise<boolean> {
+  const row = one<{ value: string }>(
+    await c.execute({ sql: 'SELECT value FROM settings WHERE key = ?', args: [key] }),
+  );
+  return Boolean(row);
+}
+async function setFlag(c: Client, key: string): Promise<void> {
+  await c.execute({
+    sql: `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
+    args: [key, new Date().toISOString()],
+  });
+}
+
+async function runIrrelevanceCleanup(c: Client): Promise<void> {
+  const FLAG = 'irrelevance_cleanup_v1';
+  if (await flagDone(c, FLAG)) return;
+
+  const rows = many<{
     id: string;
     name: string;
     category: string | null;
     types_json: string | null;
-  }[];
-
-  const update = connection.prepare(
-    'UPDATE stores SET relevance_score = ? WHERE id = ?',
+    is_irrelevant: number;
+  }>(
+    await c.execute(
+      'SELECT id, name, category, types_json, is_irrelevant FROM stores',
+    ),
   );
 
-  let kept = 0;
-  const apply = connection.transaction(() => {
-    for (const r of rows) {
-      let types: string[] = [];
-      if (r.types_json) {
-        try {
-          const parsed = JSON.parse(r.types_json);
-          if (Array.isArray(parsed)) types = parsed;
-        } catch {
-          /* ignore */
-        }
+  const markIds: string[] = [];
+  const deleteIds: string[] = [];
+  for (const r of rows) {
+    let types: string[] = [];
+    if (r.types_json) {
+      try {
+        const parsed = JSON.parse(r.types_json);
+        if (Array.isArray(parsed)) types = parsed;
+      } catch {
+        /* ignore */
       }
-      const score = scoreRelevance(
-        r.name,
-        types,
-        r.category as Parameters<typeof scoreRelevance>[2],
-      );
-      update.run(score, r.id);
-      if (score >= MIN_RELEVANCE_SCORE) kept += 1;
     }
-    connection
-      .prepare(
-        `INSERT INTO settings (key, value, updated_at)
-         VALUES (?, ?, datetime('now'))
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
-      )
-      .run(FLAG, new Date().toISOString());
+    const typeBlocked = types.some((t) => CLEANUP_BLOCKED_TYPES.has(t));
+    const nameBlocked = CLEANUP_NAME_RE.test(r.name);
+    if (r.category == null && nameBlocked) {
+      deleteIds.push(r.id);
+      continue;
+    }
+    if ((typeBlocked || nameBlocked) && r.is_irrelevant !== 1) markIds.push(r.id);
+  }
+
+  const stmts = [
+    ...markIds.map((id) => ({
+      sql: 'UPDATE stores SET is_irrelevant = 1 WHERE id = ?',
+      args: [id],
+    })),
+    ...deleteIds.flatMap((id) => [
+      { sql: 'DELETE FROM visits WHERE store_id = ?', args: [id] },
+      { sql: 'DELETE FROM stores WHERE id = ?', args: [id] },
+    ]),
+  ];
+  if (stmts.length) await c.batch(stmts, 'write');
+  await setFlag(c, FLAG);
+
+  const valid = one<{ n: number }>(
+    await c.execute('SELECT COUNT(*) AS n FROM stores WHERE is_irrelevant = 0'),
+  )?.n;
+  console.log(
+    `[vaidyaroute] relevance cleanup: marked ${markIds.length} irrelevant, ` +
+      `deleted ${deleteIds.length}, ${valid ?? '?'} valid candidates remain.`,
+  );
+}
+
+async function runRelevanceBackfill(c: Client): Promise<void> {
+  const FLAG = 'relevance_score_v1';
+  if (await flagDone(c, FLAG)) return;
+
+  const rows = many<{
+    id: string;
+    name: string;
+    category: string | null;
+    types_json: string | null;
+  }>(await c.execute('SELECT id, name, category, types_json FROM stores'));
+
+  let kept = 0;
+  const stmts = rows.map((r) => {
+    let types: string[] = [];
+    if (r.types_json) {
+      try {
+        const parsed = JSON.parse(r.types_json);
+        if (Array.isArray(parsed)) types = parsed;
+      } catch {
+        /* ignore */
+      }
+    }
+    const score = scoreRelevance(
+      r.name,
+      types,
+      r.category as Parameters<typeof scoreRelevance>[2],
+    );
+    if (score >= MIN_RELEVANCE_SCORE) kept += 1;
+    return {
+      sql: 'UPDATE stores SET relevance_score = ? WHERE id = ?',
+      args: [score, r.id],
+    };
   });
-  apply();
+  if (stmts.length) await c.batch(stmts, 'write');
+  await setFlag(c, FLAG);
 
   console.log(
     `[vaidyaroute] relevance backfill: scored ${rows.length} stores, ` +
@@ -231,99 +282,11 @@ function runRelevanceBackfill(connection: BetterSqlite3Database): void {
 }
 
 // ---------------------------------------------------------------------------
-// One-time relevance cleanup of legacy/dirty store data
-// ---------------------------------------------------------------------------
-
-/**
- * Runs once per database (guarded by a settings flag): flags stores that match
- * the blocked place types or name keywords as irrelevant, and deletes obviously
- * useless rows (no category + junk name). Logs a summary.
- */
-function runIrrelevanceCleanup(connection: BetterSqlite3Database): void {
-  const CLEANUP_FLAG = 'irrelevance_cleanup_v1';
-  const done = connection
-    .prepare('SELECT value FROM settings WHERE key = ?')
-    .get(CLEANUP_FLAG);
-  if (done) return;
-
-  const rows = connection
-    .prepare('SELECT id, name, category, types_json, is_irrelevant FROM stores')
-    .all() as {
-    id: string;
-    name: string;
-    category: string | null;
-    types_json: string | null;
-    is_irrelevant: number;
-  }[];
-
-  const markIds: string[] = [];
-  const deleteIds: string[] = [];
-
-  for (const r of rows) {
-    let types: string[] = [];
-    if (r.types_json) {
-      try {
-        const parsed = JSON.parse(r.types_json);
-        if (Array.isArray(parsed)) types = parsed;
-      } catch {
-        /* ignore malformed */
-      }
-    }
-    const typeBlocked = types.some((t) => CLEANUP_BLOCKED_TYPES.has(t));
-    const nameBlocked = CLEANUP_NAME_RE.test(r.name);
-
-    // No category AND a junk name → no plausible relevance, remove entirely.
-    if (r.category == null && nameBlocked) {
-      deleteIds.push(r.id);
-      continue;
-    }
-    if ((typeBlocked || nameBlocked) && r.is_irrelevant !== 1) {
-      markIds.push(r.id);
-    }
-  }
-
-  const markStmt = connection.prepare(
-    'UPDATE stores SET is_irrelevant = 1 WHERE id = ?',
-  );
-  const delVisitsStmt = connection.prepare(
-    'DELETE FROM visits WHERE store_id = ?',
-  );
-  const delStoreStmt = connection.prepare('DELETE FROM stores WHERE id = ?');
-
-  const apply = connection.transaction(() => {
-    for (const id of markIds) markStmt.run(id);
-    for (const id of deleteIds) {
-      delVisitsStmt.run(id); // FK: clear dependent visits first
-      delStoreStmt.run(id);
-    }
-    connection
-      .prepare(
-        `INSERT INTO settings (key, value, updated_at)
-         VALUES (?, ?, datetime('now'))
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
-      )
-      .run(CLEANUP_FLAG, new Date().toISOString());
-  });
-  apply();
-
-  const valid = (
-    connection
-      .prepare('SELECT COUNT(*) AS n FROM stores WHERE is_irrelevant = 0')
-      .get() as { n: number }
-  ).n;
-
-  console.log(
-    `[vaidyaroute] relevance cleanup: marked ${markIds.length} irrelevant, ` +
-      `deleted ${deleteIds.length}, ${valid} valid candidates remain.`,
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Row types
 // ---------------------------------------------------------------------------
 
 export type { StoreCategory, VisitOutcome } from './types';
-import type { StoreCategory } from './types';
+import type { StoreCategory, FollowUp } from './types';
 
 export interface StoreRow {
   id: string;
@@ -336,19 +299,18 @@ export interface StoreRow {
   google_rating: number | null;
   hours_json: string | null;
   types_json: string | null;
-  relevance_score: number | null; // 0-10 ayurvedic-prospect relevance
+  relevance_score: number | null;
   discovered_at: string;
   refreshed_at: string;
   force_include: number; // 0 | 1
   is_irrelevant: number; // 0 | 1
-  skipped_until: string | null; // YYYY-MM-DD this store is suppressed until
+  skipped_until: string | null;
 }
 
 export interface VisitRow {
   id: number;
   store_id: string;
   visited_at: string;
-  // Free-form: one of the preset VisitOutcome values or a custom string.
   outcome: string;
   notes: string | null;
   next_visit_date: string | null;
@@ -362,13 +324,10 @@ export interface RouteRow {
 }
 
 // ---------------------------------------------------------------------------
-// Query helpers
+// Stores
 // ---------------------------------------------------------------------------
-// Thin, typed wrappers around prepared statements. The API layer (Step 4) calls
-// these instead of writing SQL inline.
 
-/** Insert a store or update it in place if the Place ID already exists. */
-export function upsertStore(store: {
+export async function upsertStore(store: {
   id: string;
   name: string;
   address: string;
@@ -380,9 +339,10 @@ export function upsertStore(store: {
   hours_json?: string | null;
   types_json?: string | null;
   relevance_score?: number | null;
-}): void {
-  db.prepare(
-    `INSERT INTO stores (id, name, address, lat, lng, phone, category, google_rating, hours_json, types_json, relevance_score, refreshed_at)
+}): Promise<void> {
+  const c = await client();
+  await c.execute({
+    sql: `INSERT INTO stores (id, name, address, lat, lng, phone, category, google_rating, hours_json, types_json, relevance_score, refreshed_at)
      VALUES (@id, @name, @address, @lat, @lng, @phone, @category, @google_rating, @hours_json, @types_json, @relevance_score, datetime('now'))
      ON CONFLICT(id) DO UPDATE SET
        name = excluded.name,
@@ -396,153 +356,175 @@ export function upsertStore(store: {
        types_json = excluded.types_json,
        relevance_score = excluded.relevance_score,
        refreshed_at = datetime('now')`,
-  ).run({
-    phone: null,
-    category: null,
-    google_rating: null,
-    hours_json: null,
-    types_json: null,
-    relevance_score: null,
-    ...store,
+    args: {
+      phone: null,
+      category: null,
+      google_rating: null,
+      hours_json: null,
+      types_json: null,
+      relevance_score: null,
+      ...store,
+    },
   });
 }
 
-export function getAllStores(): StoreRow[] {
-  return db.prepare('SELECT * FROM stores ORDER BY name').all() as StoreRow[];
+export async function getAllStores(): Promise<StoreRow[]> {
+  const c = await client();
+  return many<StoreRow>(await c.execute('SELECT * FROM stores ORDER BY name'));
 }
 
 /**
  * Stores eligible for routing: not flagged irrelevant and scored at/above the
- * relevance threshold. Unscored rows (NULL) are treated as eligible so a store
- * is never silently dropped before the backfill/discovery has scored it.
+ * relevance threshold (NULL scores treated as eligible so a store is never
+ * dropped before backfill/discovery has scored it).
  */
-export function getActiveStores(): StoreRow[] {
-  return db
-    .prepare(
-      `SELECT * FROM stores
-       WHERE is_irrelevant = 0
-         AND COALESCE(relevance_score, ?) >= ?
-       ORDER BY name`,
-    )
-    .all(MIN_RELEVANCE_SCORE, MIN_RELEVANCE_SCORE) as StoreRow[];
+export async function getActiveStores(): Promise<StoreRow[]> {
+  const c = await client();
+  return many<StoreRow>(
+    await c.execute({
+      sql: `SELECT * FROM stores
+            WHERE is_irrelevant = 0 AND COALESCE(relevance_score, ?) >= ?
+            ORDER BY name`,
+      args: [MIN_RELEVANCE_SCORE, MIN_RELEVANCE_SCORE],
+    }),
+  );
 }
 
-/**
- * "Skip today": suppress a store until the given date (exclusive). Pass null to
- * un-skip. Typically set to tomorrow so the store reappears the next day.
- */
-export function setSkippedUntil(id: string, until: string | null): void {
-  db.prepare('UPDATE stores SET skipped_until = ? WHERE id = ?').run(until, id);
+/** "Skip for today": suppress until the given date (today). null to un-skip. */
+export async function setSkippedUntil(id: string, until: string | null): Promise<void> {
+  const c = await client();
+  await c.execute({
+    sql: 'UPDATE stores SET skipped_until = ? WHERE id = ?',
+    args: [until, id],
+  });
 }
 
-/**
- * Store IDs currently skipped: skipped_until is today or later. "Skip for
- * today" sets skipped_until = today, so the store is excluded today and
- * re-enters the pool tomorrow.
- */
-export function getSkippedStoreIds(today: string): string[] {
-  const rows = db
-    .prepare('SELECT id FROM stores WHERE skipped_until IS NOT NULL AND skipped_until >= ?')
-    .all(today) as { id: string }[];
+/** Store IDs currently skipped: skipped_until is today or later. */
+export async function getSkippedStoreIds(today: string): Promise<string[]> {
+  const c = await client();
+  const rows = many<{ id: string }>(
+    await c.execute({
+      sql: 'SELECT id FROM stores WHERE skipped_until IS NOT NULL AND skipped_until >= ?',
+      args: [today],
+    }),
+  );
   return rows.map((r) => r.id);
 }
 
 /** Permanently include/exclude a store from all future routes. */
-export function setIrrelevant(id: string, irrelevant: boolean): void {
-  // Marking irrelevant also clears any "force include" pin so the two flags
-  // never contradict each other.
+export async function setIrrelevant(id: string, irrelevant: boolean): Promise<void> {
+  const c = await client();
   if (irrelevant) {
-    db.prepare(
-      'UPDATE stores SET is_irrelevant = 1, force_include = 0 WHERE id = ?',
-    ).run(id);
+    await c.execute({
+      sql: 'UPDATE stores SET is_irrelevant = 1, force_include = 0 WHERE id = ?',
+      args: [id],
+    });
   } else {
-    db.prepare('UPDATE stores SET is_irrelevant = 0 WHERE id = ?').run(id);
+    await c.execute({
+      sql: 'UPDATE stores SET is_irrelevant = 0 WHERE id = ?',
+      args: [id],
+    });
   }
 }
 
 /** Pin (or unpin) a store so it's forced into tonight's route. */
-export function setForceInclude(id: string, force: boolean): void {
-  db.prepare('UPDATE stores SET force_include = ? WHERE id = ?').run(
-    force ? 1 : 0,
-    id,
-  );
+export async function setForceInclude(id: string, force: boolean): Promise<void> {
+  const c = await client();
+  await c.execute({
+    sql: 'UPDATE stores SET force_include = ? WHERE id = ?',
+    args: [force ? 1 : 0, id],
+  });
 }
 
 /** Place IDs the user has pinned for tonight. */
-export function getForceIncludedStoreIds(): string[] {
-  const rows = db
-    .prepare('SELECT id FROM stores WHERE force_include = 1')
-    .all() as { id: string }[];
+export async function getForceIncludedStoreIds(): Promise<string[]> {
+  const c = await client();
+  const rows = many<{ id: string }>(
+    await c.execute('SELECT id FROM stores WHERE force_include = 1'),
+  );
   return rows.map((r) => r.id);
 }
 
 /** How many stores were refreshed within the last `days` days. */
-export function countFreshStores(days: number): number {
-  const row = db
-    .prepare(
-      `SELECT COUNT(*) AS n FROM stores WHERE refreshed_at > datetime('now', ?)`,
-    )
-    .get(`-${days} days`) as { n: number };
-  return row.n;
+export async function countFreshStores(days: number): Promise<number> {
+  const c = await client();
+  const row = one<{ n: number }>(
+    await c.execute({
+      sql: `SELECT COUNT(*) AS n FROM stores WHERE refreshed_at > datetime('now', ?)`,
+      args: [`-${days} days`],
+    }),
+  );
+  return row?.n ?? 0;
 }
 
-export function getStore(id: string): StoreRow | undefined {
-  return db.prepare('SELECT * FROM stores WHERE id = ?').get(id) as StoreRow | undefined;
+export async function getStore(id: string): Promise<StoreRow | undefined> {
+  const c = await client();
+  return one<StoreRow>(
+    await c.execute({ sql: 'SELECT * FROM stores WHERE id = ?', args: [id] }),
+  );
 }
 
 /** Place IDs whose data is older than `maxAgeDays` (or never refreshed). */
-export function getStaleStoreIds(maxAgeDays: number): string[] {
-  const rows = db
-    .prepare(
-      `SELECT id FROM stores
-       WHERE refreshed_at IS NULL
-          OR refreshed_at <= datetime('now', ?)`,
-    )
-    .all(`-${maxAgeDays} days`) as { id: string }[];
+export async function getStaleStoreIds(maxAgeDays: number): Promise<string[]> {
+  const c = await client();
+  const rows = many<{ id: string }>(
+    await c.execute({
+      sql: `SELECT id FROM stores WHERE refreshed_at IS NULL OR refreshed_at <= datetime('now', ?)`,
+      args: [`-${maxAgeDays} days`],
+    }),
+  );
   return rows.map((r) => r.id);
 }
 
-export function insertVisit(visit: {
+// ---------------------------------------------------------------------------
+// Visits
+// ---------------------------------------------------------------------------
+
+export async function insertVisit(visit: {
   store_id: string;
   outcome: string;
   notes?: string | null;
   next_visit_date?: string | null;
-}): VisitRow {
-  const result = db
-    .prepare(
-      `INSERT INTO visits (store_id, outcome, notes, next_visit_date)
-       VALUES (@store_id, @outcome, @notes, @next_visit_date)`,
-    )
-    .run({ notes: null, next_visit_date: null, ...visit });
-  return db
-    .prepare('SELECT * FROM visits WHERE id = ?')
-    .get(result.lastInsertRowid) as VisitRow;
+}): Promise<VisitRow> {
+  const c = await client();
+  const rs = await c.execute({
+    sql: `INSERT INTO visits (store_id, outcome, notes, next_visit_date)
+          VALUES (@store_id, @outcome, @notes, @next_visit_date)
+          RETURNING *`,
+    args: { notes: null, next_visit_date: null, ...visit },
+  });
+  return one<VisitRow>(rs)!;
 }
 
 /** Map of store_id -> that store's most recent visit. */
-export function getLatestVisitsByStore(): Map<string, VisitRow> {
-  const rows = db
-    .prepare(
+export async function getLatestVisitsByStore(): Promise<Map<string, VisitRow>> {
+  const c = await client();
+  const rows = many<VisitRow>(
+    await c.execute(
       `SELECT v.* FROM visits v
        JOIN (
-         SELECT store_id, MAX(visited_at) AS max_at, MAX(id) AS max_id
-         FROM visits GROUP BY store_id
-       ) latest
-         ON v.store_id = latest.store_id
-        AND v.id = latest.max_id`,
-    )
-    .all() as VisitRow[];
+         SELECT store_id, MAX(id) AS max_id FROM visits GROUP BY store_id
+       ) latest ON v.store_id = latest.store_id AND v.id = latest.max_id`,
+    ),
+  );
   return new Map(rows.map((r) => [r.store_id, r]));
 }
 
-export function getVisitsForStore(storeId: string): VisitRow[] {
-  return db
-    .prepare('SELECT * FROM visits WHERE store_id = ? ORDER BY visited_at DESC')
-    .all(storeId) as VisitRow[];
+export async function getVisitsForStore(storeId: string): Promise<VisitRow[]> {
+  const c = await client();
+  return many<VisitRow>(
+    await c.execute({
+      sql: 'SELECT * FROM visits WHERE store_id = ? ORDER BY visited_at DESC',
+      args: [storeId],
+    }),
+  );
 }
 
-export function getAllVisits(): VisitRow[] {
-  return db.prepare('SELECT * FROM visits ORDER BY visited_at DESC').all() as VisitRow[];
+export async function getAllVisits(): Promise<VisitRow[]> {
+  const c = await client();
+  return many<VisitRow>(
+    await c.execute('SELECT * FROM visits ORDER BY visited_at DESC'),
+  );
 }
 
 export interface VisitWithStore extends VisitRow {
@@ -550,98 +532,106 @@ export interface VisitWithStore extends VisitRow {
   store_address: string;
 }
 
-/** All visits, newest first, with the store's name/address for display. */
-export function getVisitsWithStore(): VisitWithStore[] {
-  return db
-    .prepare(
+export async function getVisitsWithStore(): Promise<VisitWithStore[]> {
+  const c = await client();
+  return many<VisitWithStore>(
+    await c.execute(
       `SELECT v.*,
               COALESCE(s.name, '(deleted store)') AS store_name,
               COALESCE(s.address, '') AS store_address
        FROM visits v
        LEFT JOIN stores s ON s.id = v.store_id
        ORDER BY v.visited_at DESC`,
-    )
-    .all() as VisitWithStore[];
-}
-
-import type { FollowUp } from './types';
-
-/**
- * Stores whose most recent visit scheduled a follow-up for exactly `date`.
- * Used for the "Follow-up today" banners on the main page.
- */
-export function getFollowUpsForDate(date: string): FollowUp[] {
-  return db
-    .prepare(
-      `SELECT v.store_id AS store_id,
-              COALESCE(s.name, '(deleted store)') AS store_name,
-              v.notes AS notes,
-              v.next_visit_date AS next_visit_date
-       FROM visits v
-       JOIN (
-         SELECT store_id, MAX(id) AS max_id FROM visits GROUP BY store_id
-       ) latest ON v.id = latest.max_id
-       LEFT JOIN stores s ON s.id = v.store_id
-       WHERE v.next_visit_date = ?
-       ORDER BY store_name`,
-    )
-    .all(date) as FollowUp[];
+    ),
+  );
 }
 
 /** Store IDs visited within the last `days` days — excluded from new routes. */
-export function getRecentlyVisitedStoreIds(days: number): string[] {
-  const rows = db
-    .prepare(
-      `SELECT DISTINCT store_id FROM visits
-       WHERE visited_at >= datetime('now', ?)`,
-    )
-    .all(`-${days} days`) as { store_id: string }[];
+export async function getRecentlyVisitedStoreIds(days: number): Promise<string[]> {
+  const c = await client();
+  const rows = many<{ store_id: string }>(
+    await c.execute({
+      sql: `SELECT DISTINCT store_id FROM visits WHERE visited_at >= datetime('now', ?)`,
+      args: [`-${days} days`],
+    }),
+  );
   return rows.map((r) => r.store_id);
 }
 
-export function getRouteForDate(date: string): RouteRow | undefined {
-  return db
-    .prepare('SELECT * FROM routes WHERE date = ? ORDER BY generated_at DESC LIMIT 1')
-    .get(date) as RouteRow | undefined;
+/** Stores whose most recent visit scheduled a follow-up for exactly `date`. */
+export async function getFollowUpsForDate(date: string): Promise<FollowUp[]> {
+  const c = await client();
+  return many<FollowUp>(
+    await c.execute({
+      sql: `SELECT v.store_id AS store_id,
+                   COALESCE(s.name, '(deleted store)') AS store_name,
+                   v.notes AS notes,
+                   v.next_visit_date AS next_visit_date
+            FROM visits v
+            JOIN (
+              SELECT store_id, MAX(id) AS max_id FROM visits GROUP BY store_id
+            ) latest ON v.id = latest.max_id
+            LEFT JOIN stores s ON s.id = v.store_id
+            WHERE v.next_visit_date = ?
+            ORDER BY store_name`,
+      args: [date],
+    }),
+  );
 }
 
-export function saveRoute(date: string, storeIds: string[]): RouteRow {
-  const result = db
-    .prepare('INSERT INTO routes (date, store_ids_json) VALUES (?, ?)')
-    .run(date, JSON.stringify(storeIds));
-  return db
-    .prepare('SELECT * FROM routes WHERE id = ?')
-    .get(result.lastInsertRowid) as RouteRow;
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
+
+export async function getRouteForDate(date: string): Promise<RouteRow | undefined> {
+  const c = await client();
+  return one<RouteRow>(
+    await c.execute({
+      sql: 'SELECT * FROM routes WHERE date = ? ORDER BY generated_at DESC LIMIT 1',
+      args: [date],
+    }),
+  );
+}
+
+export async function saveRoute(date: string, storeIds: string[]): Promise<RouteRow> {
+  const c = await client();
+  const rs = await c.execute({
+    sql: 'INSERT INTO routes (date, store_ids_json) VALUES (?, ?) RETURNING *',
+    args: [date, JSON.stringify(storeIds)],
+  });
+  return one<RouteRow>(rs)!;
 }
 
 /** Remove all saved routes for a date so the next request regenerates fresh. */
-export function deleteRoutesForDate(date: string): number {
-  return db.prepare('DELETE FROM routes WHERE date = ?').run(date).changes;
+export async function deleteRoutesForDate(date: string): Promise<number> {
+  const c = await client();
+  const rs = await c.execute({
+    sql: 'DELETE FROM routes WHERE date = ?',
+    args: [date],
+  });
+  return Number(rs.rowsAffected);
 }
 
 /**
- * Clear cached stores when the starting point moves to a new area, WITHOUT
- * losing the user's history: visited stores and all their visits are kept (so
- * the History page and store timelines stay intact), only unvisited stores and
- * the saved routes are removed. New-city discovery then repopulates the pool;
- * the retained out-of-area visited stores are far from the new origin and so
- * never surface in the nearby clusters.
+ * Clear cached stores when the starting point moves to a new area, keeping the
+ * user's history: visited stores and all visits are kept, only unvisited stores
+ * and the saved routes are removed.
  */
-export function resetForNewLocation(): { storesDeleted: number } {
-  const result = { storesDeleted: 0 };
-  const tx = db.transaction(() => {
-    result.storesDeleted = db
-      .prepare(
-        `DELETE FROM stores
-         WHERE id NOT IN (
-           SELECT DISTINCT store_id FROM visits WHERE store_id IS NOT NULL
-         )`,
-      )
-      .run().changes;
-    db.prepare('DELETE FROM routes').run();
-  });
-  tx();
-  return result;
+export async function resetForNewLocation(): Promise<{ storesDeleted: number }> {
+  const c = await client();
+  const rs = await c.batch(
+    [
+      {
+        sql: `DELETE FROM stores
+              WHERE id NOT IN (
+                SELECT DISTINCT store_id FROM visits WHERE store_id IS NOT NULL
+              )`,
+      },
+      { sql: 'DELETE FROM routes' },
+    ],
+    'write',
+  );
+  return { storesDeleted: Number(rs[0]?.rowsAffected ?? 0) };
 }
 
 // ---------------------------------------------------------------------------
@@ -658,47 +648,50 @@ export const SETTING_KEYS = {
 export const DEFAULT_VISIT_START = '17:00';
 export const DEFAULT_VISIT_END = '20:00';
 
-export function getSetting(key: string): string | null {
-  const row = db
-    .prepare('SELECT value FROM settings WHERE key = ?')
-    .get(key) as { value: string } | undefined;
+export async function getSetting(key: string): Promise<string | null> {
+  const c = await client();
+  const row = one<{ value: string }>(
+    await c.execute({ sql: 'SELECT value FROM settings WHERE key = ?', args: [key] }),
+  );
   return row?.value ?? null;
 }
 
-export function setSetting(key: string, value: string): void {
-  db.prepare(
-    `INSERT INTO settings (key, value, updated_at)
-     VALUES (?, ?, datetime('now'))
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
-  ).run(key, value);
+export async function setSetting(key: string, value: string): Promise<void> {
+  const c = await client();
+  await c.execute({
+    sql: `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
+    args: [key, value],
+  });
 }
 
-/** Saved starting address, or null if the user hasn't set one yet. */
-export function getStartingAddress(): string | null {
-  const v = getSetting(SETTING_KEYS.startingAddress);
+export async function getStartingAddress(): Promise<string | null> {
+  const v = await getSetting(SETTING_KEYS.startingAddress);
   return v && v.trim().length > 0 ? v : null;
 }
 
-export function setStartingAddress(address: string): void {
-  setSetting(SETTING_KEYS.startingAddress, address.trim());
+export async function setStartingAddress(address: string): Promise<void> {
+  await setSetting(SETTING_KEYS.startingAddress, address.trim());
 }
 
-/** Visit window (HH:MM), falling back to the 17:00–20:00 default. */
-export function getVisitWindow(): { start: string; end: string } {
+export async function getVisitWindow(): Promise<{ start: string; end: string }> {
+  const [start, end] = await Promise.all([
+    getSetting(SETTING_KEYS.visitStart),
+    getSetting(SETTING_KEYS.visitEnd),
+  ]);
   return {
-    start: getSetting(SETTING_KEYS.visitStart) || DEFAULT_VISIT_START,
-    end: getSetting(SETTING_KEYS.visitEnd) || DEFAULT_VISIT_END,
+    start: start || DEFAULT_VISIT_START,
+    end: end || DEFAULT_VISIT_END,
   };
 }
 
-export function setVisitWindow(start: string, end: string): void {
-  setSetting(SETTING_KEYS.visitStart, start);
-  setSetting(SETTING_KEYS.visitEnd, end);
+export async function setVisitWindow(start: string, end: string): Promise<void> {
+  await setSetting(SETTING_KEYS.visitStart, start);
+  await setSetting(SETTING_KEYS.visitEnd, end);
 }
 
-/** Lat/lng of the last discovery run, or null if discovery hasn't run yet. */
-export function getLastDiscoveryLocation(): { lat: number; lng: number } | null {
-  const raw = getSetting(SETTING_KEYS.lastDiscoveryLocation);
+export async function getLastDiscoveryLocation(): Promise<{ lat: number; lng: number } | null> {
+  const raw = await getSetting(SETTING_KEYS.lastDiscoveryLocation);
   if (!raw) return null;
   try {
     const v = JSON.parse(raw);
@@ -711,6 +704,6 @@ export function getLastDiscoveryLocation(): { lat: number; lng: number } | null 
   return null;
 }
 
-export function setLastDiscoveryLocation(lat: number, lng: number): void {
-  setSetting(SETTING_KEYS.lastDiscoveryLocation, JSON.stringify({ lat, lng }));
+export async function setLastDiscoveryLocation(lat: number, lng: number): Promise<void> {
+  await setSetting(SETTING_KEYS.lastDiscoveryLocation, JSON.stringify({ lat, lng }));
 }

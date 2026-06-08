@@ -7,5 +7,7 @@ export const dynamic = 'force-dynamic';
 
 /** Stores with a follow-up scheduled for today. */
 export async function GET() {
-  return NextResponse.json({ follow_ups: getFollowUpsForDate(todayString()) });
+  return NextResponse.json({
+    follow_ups: await getFollowUpsForDate(todayString()),
+  });
 }

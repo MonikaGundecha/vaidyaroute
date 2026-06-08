@@ -100,16 +100,21 @@ interface Candidates {
  *     overrides the cooldown so they resurface.
  * Stores the user pinned ("force include") bypass every exclusion above.
  */
-function selectCandidates(
+async function selectCandidates(
   openStores: StoreRow[],
   date: Date,
   cooldownDays: number,
-): Candidates {
-  const latest = getLatestVisitsByStore();
-  const recent = new Set(getRecentlyVisitedStoreIds(cooldownDays));
-  const forcedIds = new Set(getForceIncludedStoreIds());
+): Promise<Candidates> {
   const today = todayString(date);
-  const skippedIds = new Set(getSkippedStoreIds(today));
+  const [latest, recentIds, forcedList, skippedList] = await Promise.all([
+    getLatestVisitsByStore(),
+    getRecentlyVisitedStoreIds(cooldownDays),
+    getForceIncludedStoreIds(),
+    getSkippedStoreIds(today),
+  ]);
+  const recent = new Set(recentIds);
+  const forcedIds = new Set(forcedList);
+  const skippedIds = new Set(skippedList);
 
   const dueFollowUpIds = new Set<string>();
   for (const [storeId, visit] of Array.from(latest.entries())) {
@@ -199,14 +204,14 @@ export function clusterStores(
  * clusters ranked best-first. The route generator takes index 0 normally and a
  * higher index when the user hits "Regenerate".
  */
-export function selectClusters(
+export async function selectClusters(
   openStores: StoreRow[],
   options: SelectClustersOptions,
-): Cluster[] {
+): Promise<Cluster[]> {
   const cfg = { ...DEFAULTS, ...options };
   const date = options.date ?? new Date();
 
-  const { stores, dueFollowUpIds, forcedIds } = selectCandidates(
+  const { stores, dueFollowUpIds, forcedIds } = await selectCandidates(
     openStores,
     date,
     cfg.visitCooldownDays,

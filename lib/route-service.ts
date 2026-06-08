@@ -39,8 +39,6 @@ const DISCOVERY_FRESHNESS_DAYS = 7;
 /** A starting point this far (m) from the last discovery is a new location. */
 const NEW_LOCATION_THRESHOLD_METERS = 10_000;
 
-const startingAddress = () => getStartingAddress() ?? '';
-
 const MODE_WORD: Record<TravelMode, string> = {
   driving: 'drive',
   walking: 'walk',
@@ -58,14 +56,14 @@ function singleStoreMapsUrl(s: StoreRow): string {
   return `https://www.google.com/maps/search/?api=1&query=${s.lat}%2C${s.lng}`;
 }
 
-function stopFromStore(
+async function stopFromStore(
   store: StoreRow,
   order: number,
   leg: { seconds: number; text: string; estimated: boolean },
   mode: TravelMode,
   forDate: Date,
-): RouteStopResponse {
-  const visits = getVisitsForStore(store.id);
+): Promise<RouteStopResponse> {
+  const visits = await getVisitsForStore(store.id);
   const label = leg.text === '—' ? '—' : `${leg.text} ${MODE_WORD[mode]}`;
   return {
     order,
@@ -94,7 +92,7 @@ function stopFromStore(
   };
 }
 
-function buildResponse(
+async function buildResponse(
   date: string,
   forDate: Date,
   route: OptimizedRoute,
@@ -104,20 +102,24 @@ function buildResponse(
     alternativeCount: number;
     warning?: string;
   },
-): RouteResponse {
+): Promise<RouteResponse> {
+  const originAddress = (await getStartingAddress()) ?? '';
+  const stops = await Promise.all(
+    route.stops.map((s) =>
+      stopFromStore(s.store, s.order, s.travelFromPrevious, route.mode, forDate),
+    ),
+  );
   return {
     date,
     mode: route.mode,
-    origin_address: startingAddress(),
-    stops: route.stops.map((s) =>
-      stopFromStore(s.store, s.order, s.travelFromPrevious, route.mode, forDate),
-    ),
+    origin_address: originAddress,
+    stops,
     total_estimated_time: route.totalTravelText,
     used_fallback: route.usedFallback,
     cluster_index: meta.clusterIndex,
     alternative_cluster_count: meta.alternativeCount,
     google_maps_directions_url: buildGoogleMapsDirectionsUrl(
-      startingAddress(),
+      originAddress,
       route.stops.map((s) => s.store),
       route.mode,
     ),
@@ -143,13 +145,13 @@ function degradedRoute(stores: StoreRow[], mode: TravelMode): OptimizedRoute {
 }
 
 /** Hard fallback (note 4): nearest cached stores when Google is unreachable. */
-function fallbackResponse(
+async function fallbackResponse(
   date: string,
   forDate: Date,
   origin: LatLng | null,
   warning: string,
-): RouteResponse {
-  let stores = getActiveStores();
+): Promise<RouteResponse> {
+  let stores = await getActiveStores();
   if (origin) {
     stores = [...stores].sort(
       (a, b) =>
@@ -171,7 +173,7 @@ function fallbackResponse(
 
 /** Re-run discovery only if the cached store data has gone stale. */
 async function ensureFreshStores(): Promise<void> {
-  if (countFreshStores(DISCOVERY_FRESHNESS_DAYS) > 0) return;
+  if ((await countFreshStores(DISCOVERY_FRESHNESS_DAYS)) > 0) return;
   await discoverStores();
 }
 
@@ -194,14 +196,14 @@ export async function generateRoute(
   const regenerate = opts.regenerate ?? false;
 
   // No starting address configured → prompt the user to set one (Settings).
-  if (!getStartingAddress()) {
+  if (!(await getStartingAddress())) {
     return {
-      ...buildResponse(dateStr, date, degradedRoute([], ROUTE_MODE), {
+      ...(await buildResponse(dateStr, date, degradedRoute([], ROUTE_MODE), {
         source: 'needs_setup',
         clusterIndex: 0,
         alternativeCount: 0,
         warning: 'Set your starting address in Settings to plan a route.',
-      }),
+      })),
       needs_setup: true,
     };
   }
@@ -221,33 +223,33 @@ export async function generateRoute(
 
   // If the starting point moved to a new area, the cached stores belong to the
   // old city — wipe them and rediscover so we never serve another city's data.
-  const lastLoc = getLastDiscoveryLocation();
+  const lastLoc = await getLastDiscoveryLocation();
   let justDiscovered = false;
   if (!lastLoc) {
     // First run (or legacy DB): adopt the current origin without wiping the
     // existing data. Discovery still runs below if the pool is empty/stale.
-    setLastDiscoveryLocation(origin.lat, origin.lng);
+    await setLastDiscoveryLocation(origin.lat, origin.lng);
   } else if (haversineMeters(lastLoc, origin) > NEW_LOCATION_THRESHOLD_METERS) {
     // Clear the old area's cached stores + routes, but KEEP visit history
     // (visited stores and their visits are retained).
-    resetForNewLocation();
+    await resetForNewLocation();
     try {
       await discoverStores();
       justDiscovered = true;
     } catch {
       /* Google unreachable — proceed with an empty pool, prompt to retry */
     }
-    setLastDiscoveryLocation(origin.lat, origin.lng);
+    await setLastDiscoveryLocation(origin.lat, origin.lng);
   }
 
   // Replay today's saved route unless the user asked to regenerate.
   if (!regenerate) {
-    const existing = getRouteForDate(dateStr);
+    const existing = await getRouteForDate(dateStr);
     if (existing) {
       const ids = JSON.parse(existing.store_ids_json) as string[];
-      const ordered = ids
-        .map((id) => getStore(id))
-        .filter((s): s is StoreRow => Boolean(s));
+      const ordered = (await Promise.all(ids.map((id) => getStore(id)))).filter(
+        (s): s is StoreRow => Boolean(s),
+      );
       if (ordered.length > 0) {
         const route = await routeForOrderedStores(ordered, origin, ROUTE_MODE);
         return buildResponse(dateStr, date, route, {
@@ -269,12 +271,12 @@ export async function generateRoute(
     }
   }
 
-  const openStores = getOpenStoresTonight(date);
-  const clusters = selectClusters(openStores, { origin, date });
+  const openStores = await getOpenStoresTonight(date);
+  const clusters = await selectClusters(openStores, { origin, date });
 
   if (clusters.length === 0) {
     const reason =
-      getActiveStores().length === 0
+      (await getActiveStores()).length === 0
         ? 'No stores discovered yet — check the API key and try again.'
         : 'No eligible stores open during tonight’s window.';
     return buildResponse(dateStr, date, degradedRoute([], ROUTE_MODE), {
@@ -291,7 +293,7 @@ export async function generateRoute(
   const chosen = clusters[index];
 
   const route = await optimizeRoute(chosen.stores, origin, ROUTE_MODE);
-  saveRoute(dateStr, route.stops.map((s) => s.store.id));
+  await saveRoute(dateStr, route.stops.map((s) => s.store.id));
 
   return buildResponse(dateStr, date, route, {
     source: 'generated',

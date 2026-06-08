@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
   if (skip !== undefined && typeof skip !== 'boolean') {
     return NextResponse.json({ error: 'skip must be a boolean' }, { status: 400 });
   }
-  if (!getStore(store_id)) {
+  if (!(await getStore(store_id))) {
     return NextResponse.json({ error: 'Unknown store_id' }, { status: 404 });
   }
 
@@ -42,10 +42,10 @@ export async function POST(req: NextRequest) {
   const until = doSkip ? today : null;
 
   // 1) Persist the skip flag in the DB.
-  setSkippedUntil(store_id, until);
+  await setSkippedUntil(store_id, until);
 
   // 2) Drop today's saved route(s) so the next generate rebuilds without it.
-  const removed = deleteRoutesForDate(today);
+  const removed = await deleteRoutesForDate(today);
 
   return NextResponse.json({
     ok: true,

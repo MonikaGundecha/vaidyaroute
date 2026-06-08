@@ -16,7 +16,7 @@ export async function generateMetadata({
 }: {
   params: { id: string };
 }): Promise<Metadata> {
-  const store = getStore(params.id);
+  const store = await getStore(params.id);
   return { title: `VaidyaRoute – ${store?.name ?? 'Store'}` };
 }
 
@@ -24,16 +24,16 @@ function toLocal(ts: string): Date {
   return new Date(ts.replace(' ', 'T') + 'Z');
 }
 
-export default function StoreDetailPage({
+export default async function StoreDetailPage({
   params,
 }: {
   params: { id: string };
 }) {
-  const store = getStore(params.id);
+  const store = await getStore(params.id);
   if (!store) notFound();
 
   const cat = categoryMeta(store.category);
-  const visits = getVisitsForStore(store.id);
+  const visits = await getVisitsForStore(store.id);
   const weekdayHours = getWeekdayHours(store.hours_json);
   const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
 

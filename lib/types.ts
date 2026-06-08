@@ -1,5 +1,5 @@
 // Pure types shared between server and client. No runtime imports here so this
-// is safe to import from client components (better-sqlite3 never gets bundled).
+// is safe to import from client components (the DB driver never gets bundled).
 
 export type StoreCategory =
   | 'yoga_studio'

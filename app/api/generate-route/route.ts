@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { generateRoute } from '@/lib/route-service';
 
-// better-sqlite3 is a native module + we always want fresh data, never static.
+// Runs on the Node runtime (LibSQL client); always fresh data, never static.
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 

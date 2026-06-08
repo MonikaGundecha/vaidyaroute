@@ -20,8 +20,8 @@ function dateKey(d: Date): string {
   });
 }
 
-export default function HistoryPage() {
-  const visits = getVisitsWithStore();
+export default async function HistoryPage() {
+  const visits = await getVisitsWithStore();
 
   // Group by local calendar day, preserving newest-first order.
   const groups: { label: string; items: VisitWithStore[] }[] = [];

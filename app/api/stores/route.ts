@@ -11,8 +11,11 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const latest = getLatestVisitsByStore();
-  const stores = getAllStores().map((s) => {
+  const [latest, allStores] = await Promise.all([
+    getLatestVisitsByStore(),
+    getAllStores(),
+  ]);
+  const stores = allStores.map((s) => {
     const lv = latest.get(s.id);
     return {
       ...s,
@@ -44,16 +47,16 @@ export async function POST(req: NextRequest) {
   if (typeof store_id !== 'string' || store_id.length === 0) {
     return NextResponse.json({ error: 'store_id is required' }, { status: 400 });
   }
-  if (!getStore(store_id)) {
+  if (!(await getStore(store_id))) {
     return NextResponse.json({ error: 'Unknown store_id' }, { status: 404 });
   }
 
   if (typeof force_include === 'boolean') {
-    setForceInclude(store_id, force_include);
+    await setForceInclude(store_id, force_include);
     return NextResponse.json({ ok: true, store_id, force_include });
   }
   if (typeof is_irrelevant === 'boolean') {
-    setIrrelevant(store_id, is_irrelevant);
+    await setIrrelevant(store_id, is_irrelevant);
     return NextResponse.json({ ok: true, store_id, is_irrelevant });
   }
 

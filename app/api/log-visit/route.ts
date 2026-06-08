@@ -39,11 +39,11 @@ export async function POST(req: NextRequest) {
       { status: 400 },
     );
   }
-  if (!getStore(store_id)) {
+  if (!(await getStore(store_id))) {
     return NextResponse.json({ error: 'Unknown store_id' }, { status: 404 });
   }
 
-  const visit = insertVisit({
+  const visit = await insertVisit({
     store_id,
     outcome: outcome.trim(),
     notes: (notes as string | undefined) ?? null,

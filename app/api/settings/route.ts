@@ -12,9 +12,12 @@ export const dynamic = 'force-dynamic';
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 export async function GET() {
-  const window = getVisitWindow();
+  const [window, address] = await Promise.all([
+    getVisitWindow(),
+    getStartingAddress(),
+  ]);
   return NextResponse.json({
-    starting_address: getStartingAddress() ?? '',
+    starting_address: address ?? '',
     visit_time_start: window.start,
     visit_time_end: window.end,
   });
@@ -59,12 +62,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  setStartingAddress(starting_address);
-  setVisitWindow(visit_time_start, visit_time_end);
+  await setStartingAddress(starting_address);
+  await setVisitWindow(visit_time_start, visit_time_end);
 
   return NextResponse.json({
     ok: true,
-    starting_address: getStartingAddress(),
-    ...getVisitWindow(),
+    starting_address: await getStartingAddress(),
+    ...(await getVisitWindow()),
   });
 }
