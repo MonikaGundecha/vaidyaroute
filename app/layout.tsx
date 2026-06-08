@@ -33,7 +33,7 @@ export default function RootLayout({
     <html lang="en">
       <body className={`${inter.variable} font-sans text-ink antialiased`}>
         <Sidebar />
-        <div className="min-h-screen md:ml-[200px]">
+        <div className="min-h-screen md:ml-[72px] lg:ml-[160px] xl:ml-[200px]">
           <Header />
           {children}
         </div>

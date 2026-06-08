@@ -79,14 +79,14 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="fixed left-0 top-0 z-40 hidden h-screen w-[200px] flex-col border-r border-edge md:flex">
-      {/* Logo */}
+    <aside className="fixed left-0 top-0 z-40 hidden h-screen w-[72px] flex-col border-r border-edge md:flex lg:w-[160px] xl:w-[200px]">
+      {/* Logo — icon only when collapsed (md), wordmark from lg up */}
       <Link
         href="/"
-        className="flex items-center gap-2.5 border-b border-edge px-4 py-6"
+        className="flex items-center justify-center gap-2.5 border-b border-edge px-2 py-6 lg:justify-start lg:px-4"
       >
         <LeafMark className="h-6 w-6" />
-        <span className="text-[18px] font-extrabold text-brand">
+        <span className="hidden text-[18px] font-extrabold text-brand lg:inline">
           VaidyaRoute
         </span>
       </Link>
@@ -100,34 +100,38 @@ export default function Sidebar() {
             <Link
               key={href}
               href={href}
-              className={`flex items-center gap-2.5 rounded-[10px] px-4 py-2.5 text-[14px] font-medium transition-colors duration-200 ${
+              title={label}
+              className={`flex items-center justify-center gap-2.5 rounded-[10px] px-2 py-2.5 text-[13px] font-medium transition-colors duration-200 lg:justify-start lg:px-4 xl:text-[14px] ${
                 active
                   ? 'bg-brand-light text-brand'
                   : 'text-ink-soft hover:bg-black/[0.03]'
               }`}
             >
               <Icon />
-              {label}
+              <span className="hidden lg:inline">{label}</span>
             </Link>
           );
         })}
 
         <button
           onClick={openSettings}
-          className="flex w-full items-center gap-2.5 rounded-[10px] px-4 py-2.5 text-[14px] font-medium text-ink-soft transition-colors duration-200 hover:bg-black/[0.03]"
+          title="Settings"
+          className="flex w-full items-center justify-center gap-2.5 rounded-[10px] px-2 py-2.5 text-[13px] font-medium text-ink-soft transition-colors duration-200 hover:bg-black/[0.03] lg:justify-start lg:px-4 xl:text-[14px]"
         >
           <GearIcon />
-          Settings
+          <span className="hidden lg:inline">Settings</span>
         </button>
       </nav>
 
-      {/* Regenerate Plan — route page only */}
+      {/* Regenerate Plan — route page only; icon-only when collapsed (md) */}
       {onRoutePage && (
         <button
           onClick={() => window.dispatchEvent(new CustomEvent(FIND_NEW_STORES_EVENT))}
-          className="m-4 flex h-11 items-center justify-center gap-2 rounded-[10px] bg-accent text-[14px] font-semibold text-white transition-all duration-200 hover:bg-accent-dark active:scale-[0.97]"
+          title="Regenerate Plan"
+          className="m-3 flex h-11 items-center justify-center gap-2 rounded-[10px] bg-accent text-[13px] font-semibold text-white transition-all duration-200 hover:bg-accent-dark active:scale-[0.97] lg:m-4 xl:text-[14px]"
         >
-          ↻ Regenerate Plan
+          <span aria-hidden>↻</span>
+          <span className="hidden lg:inline">Regenerate Plan</span>
         </button>
       )}
     </aside>

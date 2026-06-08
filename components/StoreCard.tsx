@@ -87,8 +87,8 @@ export default function StoreCard({
       {/* Divider */}
       <div className="my-3 h-px bg-edge" />
 
-      {/* Primary actions — 4 pills */}
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {/* Primary actions: 3 outlined on top, Log visit full-width below */}
+      <div className="grid grid-cols-3 gap-2">
         <a href={stop.maps_url} target="_blank" rel="noreferrer" className={outlineBtn}>
           📍 Directions
         </a>
@@ -107,15 +107,15 @@ export default function StoreCard({
           📞 Call
         </a>
         <a href={researchUrl} target="_blank" rel="noreferrer" className={outlineBtn}>
-          🌐 Check online
+          🌐 Online
         </a>
-        <button
-          onClick={onLogVisit}
-          className="flex h-[36px] items-center justify-center gap-1.5 rounded-full bg-accent text-[12px] font-semibold text-white transition-all duration-200 hover:bg-accent-dark active:scale-[0.97]"
-        >
-          ✓ Log visit
-        </button>
       </div>
+      <button
+        onClick={onLogVisit}
+        className="mt-2 flex h-[36px] w-full items-center justify-center gap-1.5 rounded-full bg-accent text-[12px] font-semibold text-white transition-all duration-200 hover:bg-accent-dark active:scale-[0.97]"
+      >
+        ✓ Log visit
+      </button>
 
       {/* Secondary text links */}
       <div className="mt-2 flex items-center justify-center gap-2 text-[12px] text-ink-muted">
