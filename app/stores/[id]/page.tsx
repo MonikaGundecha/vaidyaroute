@@ -75,7 +75,7 @@ export default async function StoreDetailPage({
               rel="noreferrer"
               className="mt-2 inline-flex items-center gap-1.5 rounded-full border-[1.5px] border-brand bg-white px-3 py-1.5 text-[12px] font-semibold text-brand transition-all duration-200 hover:bg-brand-light active:scale-[0.97]"
             >
-              🌐 Check online
+              🌐 Online
             </a>
 
             <p className="mt-3 text-[14px] text-ink-soft">{store.address}</p>

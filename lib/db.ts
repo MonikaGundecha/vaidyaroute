@@ -36,7 +36,16 @@ function rawClient(): Client {
 /** Get the client, running (and awaiting) migrations exactly once. */
 async function client(): Promise<Client> {
   const c = rawClient();
-  if (!globalForDb.__vaidyaMigrated) globalForDb.__vaidyaMigrated = migrate(c);
+  // Cache the migration promise so concurrent requests share one run. If it
+  // rejects (e.g. a transient Turso error on a cold start) we must NOT keep the
+  // rejected promise around — a poisoned cache would make every later DB write
+  // reject forever. Clear it on failure so the next call retries.
+  if (!globalForDb.__vaidyaMigrated) {
+    globalForDb.__vaidyaMigrated = migrate(c).catch((err) => {
+      globalForDb.__vaidyaMigrated = undefined;
+      throw err;
+    });
+  }
   await globalForDb.__vaidyaMigrated;
   return c;
 }

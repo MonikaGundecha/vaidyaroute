@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type { VisitOutcome } from '@/lib/types';
 import { ALL_OUTCOMES, outcomeMeta } from '@/lib/ui-meta';
+import VoiceNoteButton from './VoiceNoteButton';
 
 interface VisitLoggerProps {
   storeId: string;
@@ -22,6 +23,7 @@ export default function VisitLogger({
   const [customMode, setCustomMode] = useState(false);
   const [customText, setCustomText] = useState('');
   const [notes, setNotes] = useState('');
+  const [dictating, setDictating] = useState(false);
   const [nextVisitDate, setNextVisitDate] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -149,13 +151,22 @@ export default function VisitLogger({
           <label className="mb-1 block text-sm font-medium text-gray-700">
             Notes
           </label>
-          <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            rows={3}
-            placeholder="What happened? Who did you talk to?"
-            className="w-full resize-none rounded-xl border border-gray-300 px-3 py-3 text-base"
-          />
+          <div className="flex items-start gap-2">
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={3}
+              placeholder="What happened? Who did you talk to?"
+              className={`w-full resize-none rounded-xl border border-gray-300 px-3 py-3 text-base ${
+                dictating ? 'italic' : ''
+              }`}
+            />
+            <VoiceNoteButton
+              value={notes}
+              onChange={setNotes}
+              onListeningChange={setDictating}
+            />
+          </div>
         </div>
 
         {error && <p className="mt-3 text-sm text-red-600">{error}</p>}

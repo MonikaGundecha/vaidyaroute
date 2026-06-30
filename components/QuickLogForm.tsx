@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { VisitOutcome } from '@/lib/types';
 import { outcomeMeta } from '@/lib/ui-meta';
+import VoiceNoteButton from './VoiceNoteButton';
 
 const PRESETS: VisitOutcome[] = [
   'interested',
@@ -19,6 +20,7 @@ export default function QuickLogForm({ storeId }: { storeId: string }) {
   const [customMode, setCustomMode] = useState(false);
   const [customText, setCustomText] = useState('');
   const [notes, setNotes] = useState('');
+  const [dictating, setDictating] = useState(false);
   const [nextVisitDate, setNextVisitDate] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -129,13 +131,22 @@ export default function QuickLogForm({ storeId }: { storeId: string }) {
         </div>
       )}
 
-      <textarea
-        value={notes}
-        onChange={(e) => setNotes(e.target.value)}
-        rows={3}
-        placeholder="Add notes…"
-        className="mt-3 w-full resize-none rounded-xl border-[1.5px] border-edge px-3.5 py-3 text-[15px] outline-none focus:border-brand"
-      />
+      <div className="mt-3 flex items-start gap-2">
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={3}
+          placeholder="Add notes…"
+          className={`w-full resize-none rounded-xl border-[1.5px] border-edge px-3.5 py-3 text-[15px] outline-none focus:border-brand ${
+            dictating ? 'italic' : ''
+          }`}
+        />
+        <VoiceNoteButton
+          value={notes}
+          onChange={setNotes}
+          onListeningChange={setDictating}
+        />
+      </div>
 
       {error && <p className="mt-2 text-[14px] text-danger">{error}</p>}
       {saved && <p className="mt-2 text-[14px] text-success">Visit saved.</p>}

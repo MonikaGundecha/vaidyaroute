@@ -9,6 +9,7 @@ import SettingsBar, { EDIT_LOCATION_EVENT } from '@/components/SettingsBar';
 import MapPanel from '@/components/MapPanel';
 import Map from '@/components/Map';
 import { FIND_NEW_STORES_EVENT } from '@/components/Header';
+import { isToday } from '@/lib/ui-meta';
 
 function prettyDate(): string {
   return new Date().toLocaleDateString('en-US', {
@@ -26,6 +27,7 @@ export default function HomePage() {
     null,
   );
   const [exitingId, setExitingId] = useState<string | null>(null);
+  const [visitedIds, setVisitedIds] = useState<Set<string>>(new Set());
   const [followUps, setFollowUps] = useState<FollowUp[]>([]);
   const [mapsKey, setMapsKey] = useState('');
   const routeRef = useRef<RouteResponse | null>(null);
@@ -74,6 +76,19 @@ export default function HomePage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Pre-populate the "visited" set from the DB: any stop with a visit logged
+  // today stays marked done across reloads. Merged with any in-session adds.
+  useEffect(() => {
+    if (!route?.stops) return;
+    setVisitedIds((prev) => {
+      const next = new Set(prev);
+      for (const stop of route.stops) {
+        if (isToday(stop.last_visit)) next.add(stop.store.id);
+      }
+      return next;
+    });
+  }, [route]);
 
   // "Regenerate Plan" (header) cycles to the next-best cluster.
   useEffect(() => {
@@ -246,6 +261,7 @@ export default function HomePage() {
                 key={stop.store.id}
                 stop={stop}
                 exiting={exitingId === stop.store.id}
+                visited={visitedIds.has(stop.store.id)}
                 onLogVisit={() => setLogging({ id: stop.store.id, name: stop.store.name })}
                 onSkip={() => skipStop(stop.store.id)}
                 onMarkIrrelevant={() => markIrrelevant(stop.store.id)}
@@ -264,6 +280,7 @@ export default function HomePage() {
           storeName={logging.name}
           onClose={() => setLogging(null)}
           onSaved={() => {
+            setVisitedIds((prev) => new Set(prev).add(logging.id));
             setLogging(null);
             load();
           }}

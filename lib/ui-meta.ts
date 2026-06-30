@@ -70,6 +70,19 @@ export const ALL_OUTCOMES: VisitOutcome[] = [
 ];
 
 /** "3 days ago", "Today", "Yesterday" from an ISO-ish timestamp. */
+/** True if a stored UTC "YYYY-MM-DD HH:MM:SS" timestamp falls on the local calendar day today. */
+export function isToday(timestamp: string | null): boolean {
+  if (!timestamp) return false;
+  const d = new Date(timestamp.replace(' ', 'T') + 'Z');
+  if (Number.isNaN(d.getTime())) return false;
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
+}
+
 export function relativeDay(timestamp: string | null): string | null {
   if (!timestamp) return null;
   // Stored as UTC "YYYY-MM-DD HH:MM:SS"; normalize to a parseable form.
